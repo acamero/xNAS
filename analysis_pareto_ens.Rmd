@@ -1,0 +1,84 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(jsonlite)
+library(ggplot2)
+library(dplyr)
+library(reshape)
+```
+
+
+
+# Pareto Front-based Deep Ensemble 
+
+```{r}
+filename <- "~/Documents/git/xNAS/results/metrics-e10-v0.2-fs1000-p12-g100-no+oa-v4.json"
+
+metrics_raw <- readLines(filename)
+
+
+metrics <- lapply(metrics_raw, fromJSON)
+
+metrics_base <- as.data.frame(t(sapply(metrics, function(x) {
+  unlist(x[["base"]])
+})))
+colnames(metrics_base) <- paste(colnames(metrics_base), "base", sep="_")
+
+
+metrics_modes <- as.data.frame(t(sapply(metrics, function(x) {
+  unlist(x[["mode"]])
+})))
+colnames(metrics_modes) <- paste(colnames(metrics_modes), "ens", sep="_")
+
+experiments <- as.data.frame(t(sapply(metrics, function(x) {
+  flags <- unlist(x[["flags"]])
+  if(length(flags)==6) {
+    flags <- c(flags, 0.0)
+  }
+  flags <- c(flags, x[["time_model"]], x[["time_ensemble"]])
+  flags
+})))
+colnames(experiments) <- c(colnames(experiments)[1:7], "time_model", "time_ens")
+experiments$exp <- 1:nrow(experiments)
+
+experiments <- data.frame(experiments, metrics_base, metrics_modes)
+experiments[experiments$oa == 1, c("oa")] <- "Overall"
+experiments[experiments$oa == 0, c("oa")] <- "No overall"
+
+melted_exp <- melt(experiments, id=c("seed", "epochs", "valsplit", "fitsplit", "popsize", "generations", "oa", "exp"))
+
+melted_exp$metric <- "acc"
+melted_exp[substr(melted_exp$variable, 1, 1) == "i", c("metric")] <- "iou"
+melted_exp[substr(melted_exp$variable, 1, 1) == "f", c("metric")] <- "f1"
+melted_exp[substr(melted_exp$variable, 1, 1) == "t", c("metric")] <- "seconds"
+
+
+```
+
+
+
+```{r}
+p <- ggplot(melted_exp, aes(x=variable, y=value)) + geom_boxplot(aes(fill=oa))
+p <- p + xlab("Method") + ylab("Performance") + facet_wrap( ~ metric, scales="free")
+p
+
+
+```
+
+```{r}
+friedman.test(as.matrix(experiments[experiments$oa == "Overall", c("acc_base", "acc_ens")]))
+friedman.test(as.matrix(experiments[experiments$oa == "No overall", c("acc_base", "acc_ens")]))
+
+friedman.test(as.matrix(experiments[experiments$oa == "Overall", c("iou_base", "iou_ens")]))
+friedman.test(as.matrix(experiments[experiments$oa == "No overall", c("iou_base", "iou_ens")]))
+
+friedman.test(as.matrix(experiments[experiments$oa == "Overall", c("f1_base", "f1_ens")]))
+friedman.test(as.matrix(experiments[experiments$oa == "No overall", c("f1_base", "f1_ens")]))
+```
