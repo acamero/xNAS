@@ -30,20 +30,14 @@ class Model():
     Base class for NSGA-II
     """
     def __init__(self, seed_model):
-        # TODO make a copy
         self.tf_model = tf.keras.models.clone_model(seed_model)
         self.tf_model.set_weights(seed_model.get_weights())
-
-
-def mutate_weights(model, delta=1e-4):
-    """
-    Simple normal weight mutation
-    """
-    # TODO improve implementation
-    weights = model.get_weights()
-    for w in weights:
-        w += np.random.normal(loc=0.0, scale=delta, size=w.shape)         
-    model.set_weights(weights)
+        
+    def get_weights(self):
+        return self.tf_model.get_weights()
+        
+    def set_weights(self, weights):
+        self.tf_model.set_weights(weights)
 
 
 def rand_init(seed_model):
@@ -56,11 +50,11 @@ def rand_init(seed_model):
                   loss=tf.keras.losses.categorical_crossentropy, 
                   metrics=['accuracy'])
     model.set_weights(seed_model.get_weights())    
-    mutate_weights(model)
+    gaussian_mutation(model)
     return model
 
 
-def eval_per_class(test_images, test_labels, individual):
+def f1_per_class(test_images, test_labels, individual):
     """
     Fitness function using per class f1
     """
@@ -70,7 +64,7 @@ def eval_per_class(test_images, test_labels, individual):
     return f1_per_class
     
 
-def eval_per_class_oa(test_images, test_labels, individual):
+def f1_per_class_oa(test_images, test_labels, individual):
     """
     Fitness function using per class f1 and oa f1
     """
@@ -81,11 +75,23 @@ def eval_per_class_oa(test_images, test_labels, individual):
     return np.append(f1_per_class, f1)
 
 
-def w_mutation(individual):
+def gaussian_mutation(individual, delta=1e-4):
     """
-    Weight mutation
+    Simple additive gaussian weight mutation
     """
-    mutate_weights(individual.tf_model)
+    weights = individual.get_weights()
+    for w in weights:
+        w += np.random.normal(loc=0.0, scale=delta, size=w.shape)        
+    individual.set_weights(weights)
+    return individual
+
+
+def drop_gaussian_mutation(individual, delta=1e-4, drop=0.2):
+    weights = individual.get_weights()
+    for w in weights:
+        w += np.random.normal(loc=0.0, scale=delta, size=w.shape)
+        w *= (np.random.uniform(size=w.shape) > drop)      
+    individual.set_weights(weights)
     return individual
 
 
@@ -187,6 +193,12 @@ if __name__ == '__main__':
           '--oa',
           action=argparse.BooleanOptionalAction,
           help='Include overall metric')
+    parser.add_argument(
+          '--model',
+          type=str,
+          default='cnn',
+          help='Deep learning model (one from: ' + str(m.ModelLoader.available_models()) + ") or path to keras model"
+    )
 
     FLAGS, unparsed = parser.parse_known_args()
     print(FLAGS, '\n')
@@ -203,8 +215,9 @@ if __name__ == '__main__':
     # Load/create initial seed model
     t1 = time.time()    
     m_loader = m.ModelLoader(train_images, train_labels, num_classes, epochs=FLAGS.epochs, validation_split=FLAGS.valsplit)
-    init_model = m_loader.get_model('fcn')
+    init_model = m_loader.get_model(FLAGS.model)
     t2 = time.time()
+    init_model.summary()
 
     # Compute reference performance metrics
     init_pred = init_model.predict(test_images)
@@ -242,12 +255,14 @@ if __name__ == '__main__':
 
     if FLAGS.oa:
         # fitness including overall
-        toolbox.register("evaluate", eval_per_class_oa, val_images, val_labels)
+        toolbox.register("evaluate", f1_per_class_oa, val_images, val_labels)
     else:
         # fitness per class 	
-        toolbox.register("evaluate", eval_per_class, val_images, val_labels)
+        toolbox.register("evaluate", f1_per_class, val_images, val_labels)
     
-    toolbox.register("mutate", w_mutation)
+    # TODO select with command
+    toolbox.register("mutate", gaussian_mutation)
+    # toolbox.register("mutate", drop_gaussian_mutation)
     toolbox.register("select", tools.selNSGA2)
     
     # optimze the ensemble
@@ -301,8 +316,8 @@ if __name__ == '__main__':
     stats_acc_shifted = compute_stats(acc_shifted)
     stats_iou_shifted = compute_stats(iou_shifted)
     stats_f1_shifted = compute_stats(f1_shifted)
+    
     pred_mode_shifted = stats.mode(ind_pred_classes_shifted).mode
-
     mode_acc = metrics.accuracy_score(test_labels_ix, pred_mode)
     mode_iou = metrics.jaccard_score(test_labels_ix, pred_mode, average="weighted")
     mode_f1 = metrics.f1_score(test_labels_ix, pred_mode, average="weighted")
@@ -356,13 +371,14 @@ if __name__ == '__main__':
     print("\n\nVar ensemble %5.4f" % var_ens)
     print("Entropy ensemble %5.4f" % entropy_ens)
     print("\n\nVar ensemble shifted %5.4f" % var_ens_shifted)
-    print("Entropy ensemble shifted %5.4f" % entropy_ens_shifted	)
+    print("Entropy ensemble shifted %5.4f" % entropy_ens_shifted)
    
     data = dict()
     data['flags'] = vars(FLAGS)
     data['time_model'] = t2 - t1
     data['time_ensemble'] = t4 - t3
     data['version'] = 1.0
+    data['id'] = hash(frozenset(vars(FLAGS)))
     
     data['base'] = dict()
     data['base']['acc'] = init_acc
@@ -392,7 +408,7 @@ if __name__ == '__main__':
     data['pop']['iou_shifted'] = stats_iou_shifted
     data['pop']['f1_shifted'] = stats_f1_shifted
       
-    with open('metrics.json', 'a', encoding='utf-8') as f:
+    with open('metrics_nsga2.json', 'a', encoding='utf-8') as f:
         json.dump(data, f)
         f.write('\n')
         
@@ -403,6 +419,12 @@ if __name__ == '__main__':
     predictions['shifted'] = np.stack(ind_pred_shifted_probs, axis=1).astype(float).tolist()
     
         
-    with open('predictions.json', 'a', encoding='utf-8') as f:
-        json.dump(predictions, f)
-        f.write('\n')
+    filename = "h" + str(data['id']) + "_ens_probs.npy"
+    with open(filename, 'wb') as f:
+        np.save(f, np.stack(ind_pred_probs, axis=1))
+        np.save(f, np.stack(ind_pred_shifted_probs, axis=1))
+        
+    filename = "h" + str(data['id']) + "_init_probs.npy"
+    with open(filename, 'wb') as f:
+        np.save(f, init_pred)
+        np.save(f, init_pred_shifted)

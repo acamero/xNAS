@@ -4,13 +4,11 @@ import numpy as np
 
 
 class DataLoader():
-
-    # TODO improve data path, so it could work indenpently from working path
-    data_path = 'localdata/'
-
-    def __init__(self):
+    
+    def __init__(self, data_path="localdata/"):
         self.datasets = dict()
         self.datasets['CIFAR10'] = self.load_data_CIFAR10
+        self.data_path = data_path
 
 
     def load_cifar10_1(self, version_string=''):
